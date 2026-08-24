@@ -35,3 +35,14 @@ git push origin main
 
 `upstream` points at `https://github.com/Dispatcharr/Dispatcharr.git`.
 Keep fork features on topic branches so they can be offered upstream as PRs.
+
+## Fork features
+
+- **OIDC SSO** for the web UI + Bearer auth for API clients: see the
+  docstring in `apps/accounts/oidc.py` for all `OIDC_*` environment
+  variables. The status endpoint exposes issuer + device client id for TV
+  clients (device authorization grant).
+- **Per-user favorites**: `/api/channels/favorites/` (+ `<id>/` toggle).
+- **Named output profiles**: `?output_profile=audiofix|720p|raw` on the
+  stream endpoint; seeded profiles live in
+  `core/migrations/0028_seed_fork_output_profiles.py`.
