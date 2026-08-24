@@ -42,7 +42,9 @@ DISCOVERY_CACHE_SECONDS = 3600
 
 
 def get_config():
-    issuer = os.environ.get("OIDC_ISSUER_URL", "").rstrip("/")
+    # Keep the issuer verbatim — token `iss` claims must match exactly
+    # (authentik issuers end with a slash).
+    issuer = os.environ.get("OIDC_ISSUER_URL", "")
     client_id = os.environ.get("OIDC_CLIENT_ID", "")
     client_secret = os.environ.get("OIDC_CLIENT_SECRET", "")
     accepted = [client_id] + [
@@ -71,7 +73,7 @@ def discovery():
     doc = cache.get(DISCOVERY_CACHE_KEY)
     if doc:
         return doc
-    url = cfg["issuer"] + "/.well-known/openid-configuration"
+    url = cfg["issuer"].rstrip("/") + "/.well-known/openid-configuration"
     response = requests.get(url, timeout=10)
     response.raise_for_status()
     doc = response.json()
