@@ -35,6 +35,7 @@ const LoginForm = () => {
   const [savePassword, setSavePassword] = useState(false);
   const [forgotPasswordOpened, setForgotPasswordOpened] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [sso, setSso] = useState({ enabled: false, label: 'Sign in with SSO' });
 
   // Simple base64 encoding/decoding for localStorage
   // Note: This is obfuscation, not encryption. Use browser's password manager for real security.
@@ -91,6 +92,47 @@ const LoginForm = () => {
       navigate('/channels');
     }
   }, [isAuthenticated, navigate]);
+
+  useEffect(() => {
+    fetch('/api/accounts/oidc/status/')
+      .then((r) => r.json())
+      .then((d) =>
+        setSso({ enabled: !!d.enabled, label: d.label || 'Sign in with SSO' })
+      )
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    // Tokens (or an error) handed over by the OIDC callback via URL fragment
+    const hash = new URLSearchParams(window.location.hash.slice(1));
+    const ssoError = hash.get('sso_error');
+    const access = hash.get('sso_access');
+    const refresh = hash.get('sso_refresh');
+    if (!ssoError && !access) return;
+    window.history.replaceState(null, '', window.location.pathname);
+    if (ssoError) {
+      showNotification({
+        title: 'SSO login failed',
+        message: ssoError,
+        color: 'red',
+        autoClose: 8000,
+      });
+      return;
+    }
+    (async () => {
+      setIsLoading(true);
+      try {
+        await useAuthStore.getState().adoptTokens(access, refresh);
+        await initData();
+      } catch (e) {
+        console.log(`SSO login failed: ${e}`);
+        await logout();
+      } finally {
+        setIsLoading(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleInputChange = (e) => {
     setFormData({
@@ -262,6 +304,21 @@ const LoginForm = () => {
             </Button>
           </Stack>
         </form>
+        {sso.enabled && (
+          <Stack mt="md">
+            <Divider label="or" labelPosition="center" />
+            <Button
+              variant="default"
+              fullWidth
+              disabled={isLoading}
+              onClick={() => {
+                window.location.href = '/api/accounts/oidc/login/';
+              }}
+            >
+              {sso.label}
+            </Button>
+          </Stack>
+        )}
 
         {storedVersion.version && (
           <Text

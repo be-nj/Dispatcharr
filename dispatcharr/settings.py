@@ -298,6 +298,7 @@ REST_FRAMEWORK = {
         "rest_framework.renderers.BrowsableAPIRenderer",
     ],
     "DEFAULT_AUTHENTICATION_CLASSES": [
+        "apps.accounts.authentication.OIDCBearerAuthentication",
         "rest_framework_simplejwt.authentication.JWTAuthentication",
         "apps.accounts.authentication.ApiKeyAuthentication",
     ],

@@ -1,5 +1,6 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
+from .oidc import oidc_status, oidc_login, oidc_callback
 from .api_views import (
     AuthViewSet,
     UserViewSet,
@@ -35,6 +36,9 @@ urlpatterns = [
     # Permissions API
     path("permissions/", list_permissions, name="list-permissions"),
     path("token/", TokenObtainPairView.as_view(), name="token_obtain_pair"),
+    path("oidc/status/", oidc_status, name="oidc_status"),
+    path("oidc/login/", oidc_login, name="oidc_login"),
+    path("oidc/callback/", oidc_callback, name="oidc_callback"),
     path("token/refresh/", TokenRefreshView.as_view(), name="token_refresh"),
 ]
 

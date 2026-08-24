@@ -136,9 +136,18 @@ def _resolve_output_profile(request, user):
     from core.models import OutputProfile
     param = request.GET.get('output_profile')
     if param:
+        # "raw" (or "passthrough") explicitly bypasses any transcode step,
+        # overriding a user/server default. Profiles can also be addressed by
+        # name so clients don't need to know database ids.
+        if param.lower() in ('raw', 'passthrough', 'none'):
+            return None
         try:
             return OutputProfile.objects.get(id=int(param), is_active=True)
         except (OutputProfile.DoesNotExist, ValueError, TypeError):
+            pass
+        try:
+            return OutputProfile.objects.get(name__iexact=param, is_active=True)
+        except OutputProfile.DoesNotExist:
             return None
     if user:
         custom = getattr(user, 'custom_properties', None) or {}
