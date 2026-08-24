@@ -62,7 +62,12 @@ def get_config():
         "admin_group": os.environ.get("OIDC_ADMIN_GROUP", ""),
         "required_group": os.environ.get("OIDC_REQUIRED_GROUP", ""),
         "button_label": os.environ.get("OIDC_BUTTON_LABEL", "Sign in with SSO"),
-        "accepted_audiences": accepted,
+        "device_client_id": os.environ.get("OIDC_DEVICE_CLIENT_ID", ""),
+        "accepted_audiences": accepted + (
+            [os.environ["OIDC_DEVICE_CLIENT_ID"]]
+            if os.environ.get("OIDC_DEVICE_CLIENT_ID")
+            else []
+        ),
     }
 
 
@@ -137,7 +142,15 @@ def _redirect_uri(request):
 @permission_classes([AllowAny])
 def oidc_status(request):
     cfg = get_config()
-    return JsonResponse({"enabled": cfg["enabled"], "label": cfg["button_label"]})
+    return JsonResponse(
+        {
+            "enabled": cfg["enabled"],
+            "label": cfg["button_label"],
+            # Public info for TV clients doing the OIDC device flow:
+            "issuer": cfg["issuer"],
+            "device_client_id": cfg["device_client_id"],
+        }
+    )
 
 
 @api_view(["GET"])
