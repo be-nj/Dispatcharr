@@ -103,6 +103,11 @@ jobs:
           fi
           REPO_OWNER="$(echo "${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')"
           REPO_NAME="$(echo "${{ github.event.repository.name }}" | tr '[:upper:]' '[:lower:]')"
+          # Forks have no published base image — fall back to upstream's.
+          if ! docker manifest inspect "ghcr.io/${REPO_OWNER}/${REPO_NAME}:${TAG}" >/dev/null 2>&1; then
+            REPO_OWNER="dispatcharr"
+            REPO_NAME="dispatcharr"
+          fi
           echo "image=ghcr.io/${REPO_OWNER}/${REPO_NAME}:${TAG}" >> "$GITHUB_OUTPUT"
           if grep -qx 'pyproject.toml' /tmp/changed_paths.txt || [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "sync_python_deps=true" >> "$GITHUB_OUTPUT"
