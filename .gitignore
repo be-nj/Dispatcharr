@@ -22,4 +22,4 @@ package-lock.json
 models
 .idea
 .vite/
-uv.lock
+uv.lockdocker/docker-compose.local.yml

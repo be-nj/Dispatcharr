@@ -1,0 +1,5 @@
+# Local-only overrides (gitignored): OIDC credentials from ~/.keys
+services:
+  dispatcharr:
+    env_file:
+      - /home/benjamin/.keys/dispatcharr-oidc.env

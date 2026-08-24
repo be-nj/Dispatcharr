@@ -102,3 +102,67 @@ class QueryParamJWTAuthentication(JWTAuthentication):
             return self.get_user(validated_token), validated_token
         except (InvalidToken, TokenError):
             return None
+
+
+class OIDCBearerAuthentication(authentication.BaseAuthentication):
+    """
+    Accepts `Authorization: Bearer <token>` where the token is an access token
+    issued by the configured OIDC identity provider (see apps.accounts.oidc).
+
+    Placed before SimpleJWT in DEFAULT_AUTHENTICATION_CLASSES: tokens whose
+    unverified issuer claim does not match the configured issuer are passed on
+    (return None), so locally issued SimpleJWT tokens keep working unchanged.
+    Signatures are verified against the provider's JWKS; accepted audiences
+    are the web client id plus OIDC_ACCEPTED_CLIENT_IDS (e.g. a TV app's
+    public device-flow client).
+    """
+
+    _jwks_clients = {}
+
+    def authenticate(self, request):
+        from . import oidc as oidc_module
+        import jwt as pyjwt
+
+        cfg = oidc_module.get_config()
+        if not cfg["enabled"]:
+            return None
+
+        header = authentication.get_authorization_header(request).split()
+        if len(header) != 2 or header[0].lower() != b"bearer":
+            return None
+        raw_token = header[1].decode()
+
+        try:
+            unverified = pyjwt.decode(raw_token, options={"verify_signature": False})
+        except pyjwt.PyJWTError:
+            return None
+        if unverified.get("iss") != cfg["issuer"]:
+            return None
+
+        try:
+            doc = oidc_module.discovery()
+            jwks_uri = doc["jwks_uri"]
+            client = self._jwks_clients.get(jwks_uri)
+            if client is None:
+                client = pyjwt.PyJWKClient(jwks_uri, cache_keys=True)
+                self._jwks_clients[jwks_uri] = client
+            signing_key = client.get_signing_key_from_jwt(raw_token)
+            claims = pyjwt.decode(
+                raw_token,
+                signing_key.key,
+                algorithms=["RS256", "ES256"],
+                audience=cfg["accepted_audiences"],
+                issuer=cfg["issuer"],
+            )
+        except Exception as exc:
+            raise exceptions.AuthenticationFailed(f"Invalid OIDC token: {exc.__class__.__name__}")
+
+        user = oidc_module.resolve_user(claims)
+        if user is None:
+            raise exceptions.AuthenticationFailed("User not authorized for this service")
+        if not user.is_active:
+            raise exceptions.AuthenticationFailed("User inactive")
+        return (user, None)
+
+    def authenticate_header(self, request):
+        return "Bearer"

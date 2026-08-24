@@ -1200,3 +1200,21 @@ class RecurringRecordingRule(models.Model):
             return sorted({int(d) for d in (self.days_of_week or []) if 0 <= int(d) <= 6})
         except Exception:
             return []
+
+
+class ChannelFavorite(models.Model):
+    """A user's favorite channel (fork feature; per user, not per device)."""
+
+    user = models.ForeignKey(
+        "accounts.User", on_delete=models.CASCADE, related_name="channel_favorites"
+    )
+    channel = models.ForeignKey(
+        Channel, on_delete=models.CASCADE, related_name="favorited_by"
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        unique_together = ("user", "channel")
+
+    def __str__(self):
+        return f"{self.user} ★ {self.channel}"

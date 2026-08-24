@@ -1,4 +1,5 @@
 from django.urls import path, include
+from .favorites import FavoritesAPIView, FavoriteToggleAPIView
 from rest_framework.routers import DefaultRouter
 from .api_views import (
     StreamViewSet,
@@ -37,6 +38,8 @@ router.register(r'recordings', RecordingViewSet, basename='recording')
 router.register(r'recurring-rules', RecurringRecordingRuleViewSet, basename='recurring-rule')
 
 urlpatterns = [
+    path('favorites/', FavoritesAPIView.as_view(), name='favorites'),
+    path('favorites/<int:channel_id>/', FavoriteToggleAPIView.as_view(), name='favorite_toggle'),
     # Bulk delete is a single APIView, not a ViewSet
     path('streams/bulk-delete/', BulkDeleteStreamsAPIView.as_view(), name='bulk_delete_streams'),
     path('channels/bulk-delete/', BulkDeleteChannelsAPIView.as_view(), name='bulk_delete_channels'),

@@ -186,7 +186,10 @@ variables=(
 # Optional variables, only propagate when set to avoid noisy warnings
 for _opt_var in POSTGRES_SSL POSTGRES_SSL_MODE POSTGRES_SSL_CA_CERT POSTGRES_SSL_CERT POSTGRES_SSL_KEY \
                 REDIS_SSL REDIS_SSL_VERIFY REDIS_SSL_CA_CERT REDIS_SSL_CERT REDIS_SSL_KEY \
-                DISPATCHARR_SETUP_ALLOWED_IP DISPATCHARR_TRUSTED_PROXIES; do
+                DISPATCHARR_SETUP_ALLOWED_IP DISPATCHARR_TRUSTED_PROXIES \
+                OIDC_ISSUER_URL OIDC_CLIENT_ID OIDC_CLIENT_SECRET OIDC_REDIRECT_URI \
+                OIDC_SCOPES OIDC_ADMIN_GROUP OIDC_REQUIRED_GROUP OIDC_BUTTON_LABEL \
+                OIDC_ACCEPTED_CLIENT_IDS; do
     if [ -n "${!_opt_var+x}" ]; then
         variables+=("$_opt_var")
     fi

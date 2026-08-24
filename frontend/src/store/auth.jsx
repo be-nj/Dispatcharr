@@ -173,6 +173,19 @@ const useAuthStore = create((set, get) => ({
       : localStorage.getItem('accessToken');
   },
 
+  // Adopt an externally issued SimpleJWT pair (OIDC SSO callback handover)
+  adoptTokens: async (access, refresh) => {
+    const expiration = decodeToken(access);
+    set({
+      accessToken: access,
+      refreshToken: refresh,
+      tokenExpiration: expiration,
+    });
+    localStorage.setItem('accessToken', access);
+    localStorage.setItem('refreshToken', refresh);
+    localStorage.setItem('tokenExpiration', expiration);
+  },
+
   // Action to login
   login: async ({ username, password }) => {
     try {
