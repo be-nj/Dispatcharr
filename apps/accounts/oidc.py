@@ -20,13 +20,14 @@ exchange the callback issues the same SimpleJWT token pair the password login
 would, handed to the SPA via the URL fragment of /login.
 """
 
+import json
 import logging
 import secrets
 from urllib.parse import urlencode
 
 import requests
 from django.core.cache import cache
-from django.http import HttpResponseRedirect, JsonResponse
+from django.http import HttpResponse, HttpResponseRedirect, JsonResponse
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
 from rest_framework_simplejwt.tokens import RefreshToken
@@ -234,5 +235,17 @@ def oidc_callback(request):
         return HttpResponseRedirect("/login#sso_error=inactive")
 
     refresh = RefreshToken.for_user(user)
-    fragment = urlencode({"sso_access": str(refresh.access_token), "sso_refresh": str(refresh)})
-    return HttpResponseRedirect(f"/login#{fragment}")
+    access = refresh.access_token
+    # Hand the SPA its tokens exactly like a password login would end up in
+    # localStorage, then boot the app fresh — no URL-fragment/SPA timing.
+    page = (
+        "<!doctype html><meta charset='utf-8'><script>"
+        f"localStorage.setItem('accessToken', {json.dumps(str(access))});"
+        f"localStorage.setItem('refreshToken', {json.dumps(str(refresh))});"
+        f"localStorage.setItem('tokenExpiration', {json.dumps(str(access['exp']))});"
+        "location.replace('/');"
+        "</script>Anmeldung erfolgreich – einen Moment …"
+    )
+    response = HttpResponse(page)
+    response["Cache-Control"] = "no-store"
+    return response
