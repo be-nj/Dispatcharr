@@ -95,22 +95,23 @@ def resolve_user(claims):
         return None
     groups = claims.get("groups") or []
 
-    if cfg["required_group"] and cfg["required_group"] not in groups:
-        if not (cfg["admin_group"] and cfg["admin_group"] in groups):
-            return None
-
-    user_level = 10 if (cfg["admin_group"] and cfg["admin_group"] in groups) else 1
+    is_admin = bool(cfg["admin_group"]) and cfg["admin_group"] in groups
+    if cfg["required_group"] and cfg["required_group"] not in groups and not is_admin:
+        return None
 
     user, created = User.objects.get_or_create(
         username=username,
         defaults={
             "email": claims.get("email", ""),
-            "user_level": user_level,
+            "user_level": 10 if is_admin else 1,
         },
     )
     changed = False
-    if user.user_level != user_level:
-        user.user_level = user_level
+    # Group mapping only ever raises privileges of existing users — it must
+    # not demote accounts that were made admin locally (that once locked the
+    # instance back into the setup dialog).
+    if is_admin and user.user_level < 10:
+        user.user_level = 10
         changed = True
     if claims.get("email") and user.email != claims["email"]:
         user.email = claims["email"]
