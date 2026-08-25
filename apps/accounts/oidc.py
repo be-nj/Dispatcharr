@@ -63,6 +63,13 @@ def get_config():
         "required_group": os.environ.get("OIDC_REQUIRED_GROUP", ""),
         "button_label": os.environ.get("OIDC_BUTTON_LABEL", "Sign in with SSO"),
         "device_client_id": os.environ.get("OIDC_DEVICE_CLIENT_ID", ""),
+        # authentik issues per-provider issuers; the device-flow client's
+        # tokens carry its own iss (e.g. .../application/o/castarr/).
+        "accepted_issuers": [issuer] + (
+            [os.environ["OIDC_DEVICE_ISSUER_URL"]]
+            if os.environ.get("OIDC_DEVICE_ISSUER_URL")
+            else []
+        ),
         "accepted_audiences": accepted + (
             [os.environ["OIDC_DEVICE_CLIENT_ID"]]
             if os.environ.get("OIDC_DEVICE_CLIENT_ID")

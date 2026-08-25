@@ -136,7 +136,8 @@ class OIDCBearerAuthentication(authentication.BaseAuthentication):
             unverified = pyjwt.decode(raw_token, options={"verify_signature": False})
         except pyjwt.PyJWTError:
             return None
-        if unverified.get("iss") != cfg["issuer"]:
+        token_issuer = unverified.get("iss")
+        if token_issuer not in cfg["accepted_issuers"]:
             return None
 
         try:
@@ -152,7 +153,7 @@ class OIDCBearerAuthentication(authentication.BaseAuthentication):
                 signing_key.key,
                 algorithms=["RS256", "ES256"],
                 audience=cfg["accepted_audiences"],
-                issuer=cfg["issuer"],
+                issuer=token_issuer,
             )
         except Exception as exc:
             raise exceptions.AuthenticationFailed(f"Invalid OIDC token: {exc.__class__.__name__}")
