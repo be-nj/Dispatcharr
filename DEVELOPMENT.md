@@ -45,4 +45,4 @@ Keep fork features on topic branches so they can be offered upstream as PRs.
 - **Per-user favorites**: `/api/channels/favorites/` (+ `<id>/` toggle).
 - **Named output profiles**: `?output_profile=audiofix|720p|raw` on the
   stream endpoint; seeded profiles live in
-  `core/migrations/0028_seed_fork_output_profiles.py`.
+  `core/migrations/0029_seed_fork_output_profiles.py`.

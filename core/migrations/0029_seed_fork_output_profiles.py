@@ -43,7 +43,7 @@ def unseed(apps, schema_editor):
 class Migration(migrations.Migration):
 
     dependencies = [
-        ("core", "0027_vlc_play_and_exit"),
+        ("core", "0028_alter_systemevent_event_type"),
     ]
 
     operations = [
