@@ -21,6 +21,9 @@ permissions:
 
 jobs:
   prepare:
+    # The base image is published by upstream only; forks pull
+    # ghcr.io/dispatcharr/dispatcharr:base and lack the Docker Hub secrets.
+    if: github.repository_owner == 'Dispatcharr'
     runs-on: ubuntu-24.04
     outputs:
       repo_owner: ${{ steps.meta.outputs.repo_owner }}
