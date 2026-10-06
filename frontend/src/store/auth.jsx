@@ -28,6 +28,7 @@ const useAuthStore = create((set, get) => ({
   isAuthenticated: false,
   isInitialized: false,
   isInitializing: false,
+  isCheckingAuth: true,
   user: {
     username: '',
     email: '',
@@ -138,6 +139,7 @@ const useAuthStore = create((set, get) => ({
         isAuthenticated: true,
         isInitialized: true,
         isInitializing: false,
+        isCheckingAuth: false,
       });
 
       // Note: Logos are loaded after the Channels page tables finish loading
@@ -251,6 +253,7 @@ const useAuthStore = create((set, get) => ({
       isAuthenticated: false,
       isInitialized: false,
       isInitializing: false,
+      isCheckingAuth: false,
       user: null,
     });
     localStorage.removeItem('accessToken');

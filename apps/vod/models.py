@@ -7,10 +7,36 @@ from apps.m3u.models import M3UAccount
 import uuid
 
 
+class VODLogoQuerySet(models.QuerySet):
+    def bulk_create(self, objs, *args, **kwargs):
+        # bulk_create bypasses Model.save(); clamp names here so provider
+        # movie/series titles longer than varchar(255) cannot abort VOD ingest.
+        from core.utils import truncate_with_warning
+
+        max_length = self.model._meta.get_field("name").max_length
+        for obj in objs:
+            obj.name = truncate_with_warning(
+                obj.name, max_length=max_length, label="Logo name"
+            )
+        return super().bulk_create(objs, *args, **kwargs)
+
+
 class VODLogo(models.Model):
     """Logo model specifically for VOD content (movies and series)"""
     name = models.CharField(max_length=255)
     url = models.TextField(unique=True)
+
+    objects = VODLogoQuerySet.as_manager()
+
+    def save(self, *args, **kwargs):
+        from core.utils import truncate_with_warning
+
+        self.name = truncate_with_warning(
+            self.name,
+            max_length=self._meta.get_field("name").max_length,
+            label="Logo name",
+        )
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.name
@@ -247,20 +273,35 @@ class M3UMovieRelation(models.Model):
     def __str__(self):
         return f"{self.m3u_account.name} - {self.movie.name}"
 
-    def get_stream_url(self):
-        """Get the full stream URL for this movie from this provider"""
-        if self.m3u_account.account_type == 'XC':
-            from core.xtream_codes import normalize_server_url
+    def get_stream_url(self, profile=None):
+        """Build the XC movie URL using the same credential resolution as playback.
 
-            normalized_url = normalize_server_url(self.m3u_account.server_url)
-            if not normalized_url:
-                return None
-            username = self.m3u_account.username
-            password = self.m3u_account.password
-            return f"{normalized_url}/movie/{username}/{password}/{self.stream_id}.{self.container_extension or 'mp4'}"
-        else:
-            # For other account types, we would need another way to build URLs
+        When *profile* is omitted, the account's first active profile is used
+        (identity patterns keep base credentials). Returns None for non-XC
+        accounts or when credential transform fails.
+        """
+        if self.m3u_account.account_type != "XC":
             return None
+
+        from apps.m3u.credentials import (
+            build_xc_playback_url,
+            get_transformed_credentials,
+        )
+
+        server_url, username, password = get_transformed_credentials(
+            self.m3u_account, profile
+        )
+        if not (server_url and username and password and self.stream_id):
+            return None
+
+        return build_xc_playback_url(
+            server_url,
+            username,
+            password,
+            content_path="movie",
+            stream_id=str(self.stream_id),
+            extension=self.container_extension or "mp4",
+        )
 
 
 class M3UEpisodeRelation(models.Model):
@@ -296,21 +337,35 @@ class M3UEpisodeRelation(models.Model):
     def __str__(self):
         return f"{self.m3u_account.name} - {self.episode}"
 
-    def get_stream_url(self):
-        """Get the full stream URL for this episode from this provider"""
-        if self.m3u_account.account_type == 'XC':
-            from core.xtream_codes import normalize_server_url
+    def get_stream_url(self, profile=None):
+        """Build the XC series/episode URL using the same credential resolution as playback.
 
-            normalized_url = normalize_server_url(self.m3u_account.server_url)
-            if not normalized_url:
-                return None
-            username = self.m3u_account.username
-            password = self.m3u_account.password
-            return f"{normalized_url}/series/{username}/{password}/{self.stream_id}.{self.container_extension or 'mp4'}"
-        else:
-            # We might support non XC accounts in the future
-            # For now, return None
+        When *profile* is omitted, the account's first active profile is used
+        (identity patterns keep base credentials). Returns None for non-XC
+        accounts or when credential transform fails.
+        """
+        if self.m3u_account.account_type != "XC":
             return None
+
+        from apps.m3u.credentials import (
+            build_xc_playback_url,
+            get_transformed_credentials,
+        )
+
+        server_url, username, password = get_transformed_credentials(
+            self.m3u_account, profile
+        )
+        if not (server_url and username and password and self.stream_id):
+            return None
+
+        return build_xc_playback_url(
+            server_url,
+            username,
+            password,
+            content_path="series",
+            stream_id=str(self.stream_id),
+            extension=self.container_extension or "mp4",
+        )
 
 class M3UVODCategoryRelation(models.Model):
     """Links M3U accounts to categories with provider-specific information"""

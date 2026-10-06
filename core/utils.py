@@ -115,47 +115,99 @@ def ensure_custom_properties_dict(value):
     return custom_properties_as_dict(value)
 
 
+def truncate_with_warning(value, max_length, *, label):
+    """Clamp a string to ``max_length``, logging a warning when truncated.
+
+    Used for provider-supplied CharField values (logo names, stream names,
+    EPG titles, etc.) so oversized input cannot abort bulk inserts with
+    ``value too long for type character varying(...)``.
+
+    ``max_length`` and ``label`` are required. Pass the model field limit
+    (e.g. ``Logo._meta.get_field("name").max_length``) and a short label
+    for log context (e.g. ``"Logo name"``).
+    """
+    if value is None:
+        return value
+    if not isinstance(value, str):
+        value = str(value)
+    if len(value) <= max_length:
+        return value
+    logger.warning(
+        "%s too long (%s > %s), truncating: %s...",
+        label,
+        len(value),
+        max_length,
+        value[:80],
+    )
+    return value[:max_length]
+
+
 class RedisClient:
     _client = None
     _buffer = None
     _pubsub_client = None
 
     @classmethod
+    def _connection_pool_kwargs(cls, decode_responses=True, socket_timeout=5):
+        """Build kwargs for a process-local BlockingConnectionPool."""
+        redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
+        redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
+        redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
+        redis_password = os.environ.get("REDIS_PASSWORD", getattr(settings, 'REDIS_PASSWORD', ''))
+        redis_user = os.environ.get("REDIS_USER", getattr(settings, 'REDIS_USER', ''))
+
+        socket_connect_timeout = getattr(settings, 'REDIS_SOCKET_CONNECT_TIMEOUT', 5)
+        health_check_interval = getattr(settings, 'REDIS_HEALTH_CHECK_INTERVAL', 30)
+        socket_keepalive = getattr(settings, 'REDIS_SOCKET_KEEPALIVE', True)
+        retry_on_timeout = getattr(settings, 'REDIS_RETRY_ON_TIMEOUT', True)
+        max_connections = int(getattr(settings, 'REDIS_MAX_CONNECTIONS', 50))
+        pool_timeout = float(getattr(settings, 'REDIS_POOL_TIMEOUT', 20))
+        ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
+
+        return {
+            'host': redis_host,
+            'port': redis_port,
+            'db': redis_db,
+            'password': redis_password if redis_password else None,
+            'username': redis_user if redis_user else None,
+            'socket_timeout': socket_timeout,
+            'socket_connect_timeout': socket_connect_timeout,
+            'socket_keepalive': socket_keepalive,
+            'health_check_interval': health_check_interval,
+            'retry_on_timeout': retry_on_timeout,
+            'decode_responses': decode_responses,
+            'max_connections': max_connections,
+            'timeout': pool_timeout,
+            **ssl_params,
+        }
+
+    @classmethod
+    def _make_client(cls, decode_responses=True, socket_timeout=5):
+        """Create a Redis client backed by a bounded BlockingConnectionPool."""
+        from redis.connection import BlockingConnectionPool
+
+        pool = BlockingConnectionPool(
+            **cls._connection_pool_kwargs(
+                decode_responses=decode_responses,
+                socket_timeout=socket_timeout,
+            )
+        )
+        return redis.Redis(connection_pool=pool)
+
+    @classmethod
     def _init_client(cls, decode_responses=True, max_retries=5, retry_interval=1):
         retry_count = 0
         while retry_count < max_retries:
             try:
-                # Get connection parameters from settings or environment
                 redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
                 redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
                 redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
-                redis_password = os.environ.get("REDIS_PASSWORD", getattr(settings, 'REDIS_PASSWORD', ''))
-                redis_user = os.environ.get("REDIS_USER", getattr(settings, 'REDIS_USER', ''))
-
-                # Use standardized settings
-                socket_timeout = getattr(settings, 'REDIS_SOCKET_TIMEOUT', 5)
-                socket_connect_timeout = getattr(settings, 'REDIS_SOCKET_CONNECT_TIMEOUT', 5)
-                health_check_interval = getattr(settings, 'REDIS_HEALTH_CHECK_INTERVAL', 30)
-                socket_keepalive = getattr(settings, 'REDIS_SOCKET_KEEPALIVE', True)
-                retry_on_timeout = getattr(settings, 'REDIS_RETRY_ON_TIMEOUT', True)
-
-                # TLS params from settings (empty dict when TLS is disabled)
                 ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
 
-                # Create Redis client with better defaults
-                client = redis.Redis(
-                    host=redis_host,
-                    port=redis_port,
-                    db=redis_db,
-                    password=redis_password if redis_password else None,
-                    username=redis_user if redis_user else None,
-                    socket_timeout=socket_timeout,
-                    socket_connect_timeout=socket_connect_timeout,
-                    socket_keepalive=socket_keepalive,
-                    health_check_interval=health_check_interval,
-                    retry_on_timeout=retry_on_timeout,
+                # Bounded pool: gevent concurrency must not open unbounded Redis fds.
+                client = cls._make_client(
                     decode_responses=decode_responses,
-                    **ssl_params
+                    socket_timeout=getattr(settings, 'REDIS_SOCKET_TIMEOUT', 5),
                 )
 
                 # Validate connection with ping
@@ -166,6 +218,13 @@ class RedisClient:
                 try:
                     client.config_set('save', '')  # Disable RDB snapshots
                     client.config_set('appendonly', 'no')  # Disable AOF logging
+
+                    # Close idle clients after REDIS_IDLE_TIMEOUT seconds with
+                    # no commands (0 = disabled). Blocked Celery BRPOP waiters
+                    # are exempt. Best-effort: managed Redis may reject CONFIG SET.
+                    idle_timeout = int(getattr(settings, 'REDIS_IDLE_TIMEOUT', 300))
+                    if idle_timeout > 0:
+                        client.config_set('timeout', str(idle_timeout))
 
                     # Disable protected mode when in debug mode
                     if os.environ.get('DISPATCHARR_DEBUG', '').lower() == 'true':
@@ -232,39 +291,15 @@ class RedisClient:
         """Get Redis client optimized for PubSub operations"""
         if cls._pubsub_client is None:
             retry_count = 0
+            ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
             while retry_count < max_retries:
                 try:
-                    # Get connection parameters from settings or environment
                     redis_host = os.environ.get("REDIS_HOST", getattr(settings, 'REDIS_HOST', 'localhost'))
                     redis_port = int(os.environ.get("REDIS_PORT", getattr(settings, 'REDIS_PORT', 6379)))
                     redis_db = int(os.environ.get("REDIS_DB", getattr(settings, 'REDIS_DB', 0)))
-                    redis_password = os.environ.get("REDIS_PASSWORD", getattr(settings, 'REDIS_PASSWORD', ''))
-                    redis_user = os.environ.get("REDIS_USER", getattr(settings, 'REDIS_USER', ''))
 
-                    # Use standardized settings but without socket timeouts for PubSub
-                    # Important: socket_timeout is None for PubSub operations
-                    socket_connect_timeout = getattr(settings, 'REDIS_SOCKET_CONNECT_TIMEOUT', 5)
-                    socket_keepalive = getattr(settings, 'REDIS_SOCKET_KEEPALIVE', True)
-                    health_check_interval = getattr(settings, 'REDIS_HEALTH_CHECK_INTERVAL', 30)
-                    retry_on_timeout = getattr(settings, 'REDIS_RETRY_ON_TIMEOUT', True)
-
-                    ssl_params = getattr(settings, 'REDIS_SSL_PARAMS', {})
-
-                    # Create Redis client with PubSub-optimized settings - no timeout
-                    client = redis.Redis(
-                        host=redis_host,
-                        port=redis_port,
-                        db=redis_db,
-                        password=redis_password if redis_password else None,
-                        username=redis_user if redis_user else None,
-                        socket_timeout=None,  # Critical: No timeout for PubSub operations
-                        socket_connect_timeout=socket_connect_timeout,
-                        socket_keepalive=socket_keepalive,
-                        health_check_interval=health_check_interval,
-                        retry_on_timeout=retry_on_timeout,
-                        decode_responses=True,
-                        **ssl_params
-                    )
+                    # socket_timeout=None is required so PubSub listens do not time out.
+                    client = cls._make_client(decode_responses=True, socket_timeout=None)
 
                     # Validate connection with ping
                     client.ping()
@@ -999,68 +1034,104 @@ def send_websocket_notification(notification):
 def get_host_and_port(request):
     """
     Returns (host, port) for building absolute URIs.
-    - Prefers X-Forwarded-Host/X-Forwarded-Port (nginx).
+    - Prefers X-Forwarded-Host/X-Forwarded-Port only from a trusted proxy.
     - Falls back to Host header.
     - Returns None for port if using standard ports (80/443) to omit from URLs.
     - In dev, uses 5656 as a guess if port cannot be determined.
     """
-    scheme = request.META.get("HTTP_X_FORWARDED_PROTO", request.scheme)
+    from dispatcharr.utils import request_from_trusted_proxy
+
+    host, port, _scheme = _resolve_host_port_scheme(
+        request, request_from_trusted_proxy(request)
+    )
+    return host, port
+
+
+def _resolve_host_port_scheme(request, trust_forwarded):
+    """Shared (host, port, scheme) resolution for get_host_and_port /
+    build_absolute_uri_with_port, taking a precomputed trust_forwarded so
+    callers needing both host/port and scheme don't redo the trusted-proxy
+    and scheme checks."""
+    scheme = _request_scheme(request, trust_forwarded=trust_forwarded)
     standard_port = "443" if scheme == "https" else "80"
 
-    # 1. Try X-Forwarded-Host (may include port) - set by our nginx
-    xfh = request.META.get("HTTP_X_FORWARDED_HOST")
-    if xfh:
-        if ":" in xfh:
-            host, port = xfh.split(":", 1)
-            if port == standard_port:
-                return host, None
-            return host, port
-        else:
-            host = xfh
+    # 1. Try X-Forwarded-Host (may include port) when the peer is trusted
+    if trust_forwarded:
+        xfh = request.META.get("HTTP_X_FORWARDED_HOST")
+        if xfh:
+            if ":" in xfh:
+                host, port = xfh.split(":", 1)
+                if port == standard_port:
+                    return host, None, scheme
+                return host, port, scheme
+            else:
+                host = xfh
 
-        port = request.META.get("HTTP_X_FORWARDED_PORT")
-        if port:
-            return host, None if port == standard_port else port
-        if request.META.get("HTTP_X_FORWARDED_PROTO"):
-            return host, None
+            port = request.META.get("HTTP_X_FORWARDED_PORT")
+            if port:
+                return host, (None if port == standard_port else port), scheme
+            if request.META.get("HTTP_X_FORWARDED_PROTO"):
+                return host, None, scheme
 
     # 2. Try Host header
     raw_host = request.get_host()
     if ":" in raw_host:
         host, port = raw_host.split(":", 1)
-        return host, None if port == standard_port else port
+        return host, (None if port == standard_port else port), scheme
     else:
         host = raw_host
 
     # 3. Check for X-Forwarded-Port (when Host header has no port but we're behind a reverse proxy)
-    port = request.META.get("HTTP_X_FORWARDED_PORT")
-    if port:
-        return host, None if port == standard_port else port
+    if trust_forwarded:
+        port = request.META.get("HTTP_X_FORWARDED_PORT")
+        if port:
+            return host, (None if port == standard_port else port), scheme
 
-    # 4. Behind a reverse proxy with no port info - assume standard port
-    if request.META.get("HTTP_X_FORWARDED_PROTO") or request.META.get("HTTP_X_FORWARDED_FOR"):
-        return host, None
+        # 4. Behind a reverse proxy with no port info - assume standard port
+        if request.META.get("HTTP_X_FORWARDED_PROTO") or request.META.get("HTTP_X_FORWARDED_FOR"):
+            return host, None, scheme
 
     # 5. Try SERVER_PORT from META (only if NOT behind reverse proxy)
     port = request.META.get("SERVER_PORT")
     if port:
-        return host, None if port == standard_port else port
+        return host, (None if port == standard_port else port), scheme
 
     # 6. Dev fallback
     if os.environ.get("DISPATCHARR_ENV") == "dev" or host in ("localhost", "127.0.0.1"):
-        return host, "5656"
+        return host, "5656", scheme
 
     # 7. Final fallback: assume standard port for scheme
-    return host, None
+    return host, None, scheme
+
+
+def _request_scheme(request, *, trust_forwarded: bool) -> str:
+    """Return the URL scheme, honoring forwarded proto only for trusted peers.
+
+    Django's ``request.scheme`` also consults ``SECURE_PROXY_SSL_HEADER``, so
+    for untrusted peers we fall back to the raw WSGI scheme and ignore
+    ``X-Forwarded-Proto``.
+    """
+    if trust_forwarded:
+        forwarded = (request.META.get("HTTP_X_FORWARDED_PROTO") or "").split(",")[0].strip()
+        if forwarded:
+            return forwarded
+        return request.scheme
+    get_scheme = getattr(request, "_get_scheme", None)
+    if callable(get_scheme):
+        return get_scheme()
+    return "http"
 
 
 def build_absolute_uri_with_port(request, path):
     """
     Build an absolute URI with optional port.
     Port is omitted from URL if None (standard port for scheme).
+    Forwarded scheme is used only when the peer is a trusted proxy.
     """
-    host, port = get_host_and_port(request)
-    scheme = request.META.get("HTTP_X_FORWARDED_PROTO", request.scheme)
+    from dispatcharr.utils import request_from_trusted_proxy
+
+    trust_forwarded = request_from_trusted_proxy(request)
+    host, port, scheme = _resolve_host_port_scheme(request, trust_forwarded)
     if port:
         return f"{scheme}://{host}:{port}{path}"
     return f"{scheme}://{host}{path}"

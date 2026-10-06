@@ -75,16 +75,32 @@ const request = async (url, options = {}) => {
     throw error;
   }
 
+  // { raw: true } hands back the Response for a caller that wants a blob.
+  if (options.raw) {
+    return response;
+  }
+
+  // 204 / empty bodies are success with no payload. Return null, not '',
+  // so callers that destructure the result don't silently get undefined fields.
+  const text = await response.text();
+  if (!text) {
+    return null;
+  }
   try {
-    const retval = await response.json();
-    return retval;
+    return JSON.parse(text);
   } catch (e) {
-    return '';
+    const error = new Error('Invalid JSON response');
+    error.status = response.status;
+    error.response = response;
+    error.body = text;
+    throw error;
   }
 };
 
 export default class API {
   static lastQueryParams = new URLSearchParams();
+  // Shared by queryChannels/requeryChannels to drop stale, out-of-order responses.
+  static channelsRequestVersion = 0;
 
   /**
    * A static method so we can do:  await API.getAuthToken()
@@ -333,18 +349,63 @@ export default class API {
     }
   }
 
+  /**
+   * ChannelPagination returns a bare array when neither page nor page_size is
+   * present. Table queries must always send both so the store receives
+   * { results, count } instead of an array that would wipe channels to undefined.
+   */
+  static ensureChannelsTableParams(params) {
+    const next = new URLSearchParams(params || undefined);
+    if (!next.get('page')) {
+      next.set('page', '1');
+    }
+    if (!next.get('page_size')) {
+      const pageSize =
+        useChannelsTableStore.getState().pagination?.pageSize || 50;
+      next.set('page_size', String(pageSize));
+    }
+    if (!next.get('include_streams')) {
+      next.set('include_streams', 'true');
+    }
+    return next;
+  }
+
+  /**
+   * Accept only a paginated channels payload for the table store. A bare array
+   * (legacy / unpaginated) must not be destructured as { results }.
+   */
+  static applyChannelsTableResponse(response, params) {
+    if (!response || !Array.isArray(response.results)) {
+      console.warn(
+        '[API] Ignoring channels response without a results array',
+        response
+      );
+      return false;
+    }
+    useChannelsTableStore.getState().queryChannels(response, params);
+    return true;
+  }
+
   static async queryChannels(params) {
+    const requestVersion = ++API.channelsRequestVersion;
     try {
-      API.lastQueryParams = params;
+      const queryParams = API.ensureChannelsTableParams(params);
+      API.lastQueryParams = queryParams;
 
       const response = await request(
-        `${host}/api/channels/channels/?${params.toString()}`
+        `${host}/api/channels/channels/?${queryParams.toString()}`
       );
 
-      useChannelsTableStore.getState().queryChannels(response, params);
+      if (requestVersion === API.channelsRequestVersion) {
+        API.applyChannelsTableResponse(response, queryParams);
+      }
 
       return response;
     } catch (e) {
+      if (requestVersion !== API.channelsRequestVersion) {
+        return;
+      }
+
       // Handle invalid page error by resetting to page 1 and retrying
       if (e.body?.detail === 'Invalid page.') {
         const currentPagination = useChannelsTableStore.getState().pagination;
@@ -358,14 +419,17 @@ export default class API {
           });
 
           // Update params to page 1 and retry
-          const newParams = new URLSearchParams(params);
+          const newParams = API.ensureChannelsTableParams(params);
           newParams.set('page', '1');
+          API.lastQueryParams = newParams;
 
           const response = await request(
             `${host}/api/channels/channels/?${newParams.toString()}`
           );
 
-          useChannelsTableStore.getState().queryChannels(response, newParams);
+          if (requestVersion === API.channelsRequestVersion) {
+            API.applyChannelsTableResponse(response, newParams);
+          }
           return response;
         }
       }
@@ -413,21 +477,30 @@ export default class API {
   }
 
   static async requeryChannels() {
+    const requestVersion = ++API.channelsRequestVersion;
     try {
+      // lastQueryParams may still be empty if a WebSocket refresh races the
+      // first ChannelsTable fetch (common after restore/reload). Always send
+      // page + page_size so ChannelPagination does not return a bare array.
+      const queryParams = API.ensureChannelsTableParams(API.lastQueryParams);
+      API.lastQueryParams = queryParams;
+
       const [response, ids] = await Promise.all([
-        request(
-          `${host}/api/channels/channels/?${API.lastQueryParams.toString()}`
-        ),
-        API.getAllChannelIds(API.lastQueryParams),
+        request(`${host}/api/channels/channels/?${queryParams.toString()}`),
+        API.getAllChannelIds(queryParams),
       ]);
 
-      useChannelsTableStore
-        .getState()
-        .queryChannels(response, API.lastQueryParams);
-      useChannelsTableStore.getState().setAllQueryIds(ids);
+      if (requestVersion === API.channelsRequestVersion) {
+        API.applyChannelsTableResponse(response, queryParams);
+        useChannelsTableStore.getState().setAllQueryIds(ids);
+      }
 
       return response;
     } catch (e) {
+      if (requestVersion !== API.channelsRequestVersion) {
+        return;
+      }
+
       // Handle invalid page error by resetting to page 1 and retrying
       if (e.body?.detail === 'Invalid page.') {
         const currentPagination = useChannelsTableStore.getState().pagination;
@@ -441,7 +514,7 @@ export default class API {
           });
 
           // Update params to page 1 and retry
-          const newParams = new URLSearchParams(API.lastQueryParams);
+          const newParams = API.ensureChannelsTableParams(API.lastQueryParams);
           newParams.set('page', '1');
           API.lastQueryParams = newParams;
 
@@ -450,8 +523,10 @@ export default class API {
             API.getAllChannelIds(newParams),
           ]);
 
-          useChannelsTableStore.getState().queryChannels(response, newParams);
-          useChannelsTableStore.getState().setAllQueryIds(ids);
+          if (requestVersion === API.channelsRequestVersion) {
+            API.applyChannelsTableResponse(response, newParams);
+            useChannelsTableStore.getState().setAllQueryIds(ids);
+          }
 
           return response;
         }
@@ -1833,9 +1908,13 @@ export default class API {
     }
   }
 
-  static async getGrid() {
+  static async getGrid(params = new URLSearchParams()) {
     try {
-      const response = await request(`${host}/api/epg/grid/`);
+      const qs = params.toString();
+      const url = qs
+        ? `${host}/api/epg/grid/?${qs}`
+        : `${host}/api/epg/grid/`;
+      const response = await request(url);
 
       return response.data;
     } catch (e) {
@@ -2683,7 +2762,7 @@ export default class API {
     }
   }
 
-  static async uploadLogo(file, name = null) {
+  static async uploadLogo(file, name = null, overwrite = false) {
     try {
       const formData = new FormData();
       formData.append('file', file);
@@ -2691,6 +2770,10 @@ export default class API {
       // Add custom name if provided
       if (name && name.trim()) {
         formData.append('name', name.trim());
+      }
+
+      if (overwrite) {
+        formData.append('overwrite', 'true');
       }
 
       // Add timeout handling for file uploads
@@ -2733,7 +2816,11 @@ export default class API {
         timeoutError.code = 'NETWORK_ERROR';
         throw timeoutError;
       }
-      errorNotification('Failed to upload logo', e);
+      // Skip the generic toast for an already-exists conflict — the caller
+      // handles that case with its own overwrite-confirmation prompt.
+      if (e.status !== 409 || !e.body?.already_exists) {
+        errorNotification('Failed to upload logo', e);
+      }
       throw e;
     }
   }
@@ -3238,11 +3325,12 @@ export default class API {
     }
   }
 
-  static async deleteSeriesRule(tvgId, title) {
+  static async deleteSeriesRule(tvgId, title, epgSourceId) {
     try {
       const params = new URLSearchParams();
       if (tvgId) params.set('tvg_id', tvgId);
       if (title) params.set('title', title);
+      if (epgSourceId) params.set('epg_source_id', String(epgSourceId));
       await request(`${host}/api/channels/series-rules/?${params}`, {
         method: 'DELETE',
       });
@@ -3294,13 +3382,19 @@ export default class API {
     tvg_id,
     title = null,
     scope = 'title',
+    epg_source_id,
   }) {
     try {
       const resp = await request(
         `${host}/api/channels/series-rules/bulk-remove/`,
         {
           method: 'POST',
-          body: { tvg_id, title, scope },
+          body: {
+            tvg_id,
+            title,
+            scope,
+            ...(epg_source_id ? { epg_source_id } : {}),
+          },
         }
       );
       notifications.show({ title: `Removed ${resp.removed || 0} scheduled` });
@@ -3695,6 +3789,47 @@ export default class API {
       return response;
     } catch (e) {
       errorNotification('Failed to retrieve series info', e);
+    }
+  }
+
+  static async getLogFiles() {
+    try {
+      return await request(`${host}/api/core/logs/`);
+    } catch (e) {
+      errorNotification('Failed to retrieve log files', e);
+    }
+  }
+
+  // silent drops the toast for background polls; a cursor asks only for new bytes.
+  static async getLogFile(name, { silent = false, cursor = null } = {}) {
+    try {
+      const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : '';
+      return await request(
+        `${host}/api/core/logs/${encodeURIComponent(name)}/${query}`
+      );
+    } catch (e) {
+      if (!silent) {
+        errorNotification('Failed to retrieve log file', e);
+      }
+    }
+  }
+
+  static async downloadLogFile(name) {
+    try {
+      const response = await request(
+        `${host}/api/core/logs/${encodeURIComponent(name)}/download/`,
+        { raw: true }
+      );
+      const url = URL.createObjectURL(await response.blob());
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = name;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      errorNotification('Failed to download log file', e);
     }
   }
 

@@ -6,6 +6,7 @@ from urllib.parse import quote_plus
 from django.core.exceptions import ImproperlyConfigured
 
 from dispatcharr.db.process_label import db_application_name, uses_geventpool_database_backend
+from dispatcharr.startup_log import configure_early_logging, startup_log
 
 
 def _validate_tls_cert_paths(paths, service_name):
@@ -29,6 +30,20 @@ REDIS_PORT = int(os.environ.get("REDIS_PORT", 6379))
 REDIS_DB = os.environ.get("REDIS_DB", "0")
 REDIS_USER = os.environ.get("REDIS_USER", "")
 REDIS_PASSWORD = os.environ.get("REDIS_PASSWORD", "")
+# Cap Redis TCP sockets per process-local pool. Under gevent, redis-py's default
+# unbounded ConnectionPool grows one ESTABLISHED fd per concurrent waiter.
+# BlockingConnectionPool waits instead of raising when the cap is reached.
+# Default 50 is per pool (client / buffer / pubsub / django-redis each have
+# their own); raise via REDIS_MAX_CONNECTIONS if a busy install queues.
+REDIS_MAX_CONNECTIONS = int(os.environ.get("REDIS_MAX_CONNECTIONS", "50"))
+# Seconds a greenlet waits for a free BlockingConnectionPool slot before
+# raising. Unrelated to REDIS_IDLE_TIMEOUT (server idle-client close) below.
+REDIS_POOL_TIMEOUT = float(os.environ.get("REDIS_POOL_TIMEOUT", "20"))
+# Redis-server idle-client timeout (CONFIG SET timeout / --timeout). Closes
+# pooled TCP sockets with no commands for this long. Not the pool wait above.
+# Celery BRPOP/BZPOPMIN waiters are exempt. 0 disables. Applied at
+# redis-server start (AIO) and via CONFIG SET on connect.
+REDIS_IDLE_TIMEOUT = int(os.environ.get("REDIS_IDLE_TIMEOUT", "300"))
 
 # Redis TLS configuration
 REDIS_SSL = os.environ.get("REDIS_SSL", "false").lower() == "true"
@@ -57,9 +72,9 @@ if REDIS_SSL:
 
     _mtls = "enabled" if REDIS_SSL_CERT and REDIS_SSL_KEY else "disabled"
     _verify = "on" if REDIS_SSL_VERIFY else "off"
-    print(f"Redis TLS: enabled (verify={_verify}, mTLS={_mtls})")
+    startup_log(f"Redis TLS: enabled (verify={_verify}, mTLS={_mtls})")
 else:
-    print("Redis TLS: disabled")
+    startup_log("Redis TLS: disabled")
 
 ENABLE_IP_LOOKUP = os.environ.get("DISPATCHARR_ENABLE_IP_LOOKUP", "true").lower() == "true"
 
@@ -196,15 +211,22 @@ CHANNEL_LAYERS = {
     },
 }
 
-_django_redis_opts = {
-    "CLIENT_CLASS": "django_redis.client.DefaultClient",
+_django_redis_pool_kwargs = {
+    "max_connections": REDIS_MAX_CONNECTIONS,
+    "timeout": REDIS_POOL_TIMEOUT,
 }
 if REDIS_SSL:
     # rediss:// in the URL already enables SSL; pass cert paths and verify
     # settings separately via CONNECTION_POOL_KWARGS.
-    _django_redis_opts["CONNECTION_POOL_KWARGS"] = {
-        k: v for k, v in REDIS_SSL_PARAMS.items() if k != "ssl"
-    }
+    _django_redis_pool_kwargs.update(
+        {k: v for k, v in REDIS_SSL_PARAMS.items() if k != "ssl"}
+    )
+
+_django_redis_opts = {
+    "CLIENT_CLASS": "django_redis.client.DefaultClient",
+    "CONNECTION_POOL_CLASS": "redis.connection.BlockingConnectionPool",
+    "CONNECTION_POOL_KWARGS": _django_redis_pool_kwargs,
+}
 
 CACHES = {
     "default": {
@@ -259,7 +281,7 @@ else:
     }
 
     if not _use_geventpool_db:
-        print(
+        startup_log(
             f"PostgreSQL: standard backend for Celery ({_pg_options.get('application_name')})"
         )
 
@@ -281,9 +303,9 @@ else:
             DATABASES["default"]["OPTIONS"]["sslkey"] = POSTGRES_SSL_KEY
 
         _mtls = "enabled" if POSTGRES_SSL_CERT and POSTGRES_SSL_KEY else "disabled"
-        print(f"PostgreSQL TLS: enabled (sslmode={POSTGRES_SSL_MODE}, mTLS={_mtls})")
+        startup_log(f"PostgreSQL TLS: enabled (sslmode={POSTGRES_SSL_MODE}, mTLS={_mtls})")
     else:
-        print("PostgreSQL TLS: disabled")
+        startup_log("PostgreSQL TLS: disabled")
 
 AUTH_PASSWORD_VALIDATORS = [
     {
@@ -394,6 +416,13 @@ CELERY_RESULT_EXPIRES = 3600  # 1 hour TTL for task results
 CELERY_BROKER_TRANSPORT_OPTIONS = {
     "visibility_timeout": 3600,  # Time in seconds that a task remains invisible during retries
 }
+
+# Kombu (Celery's broker client) keeps its own Redis connection pool per
+# process, separate from Django's RedisClient/cache pools above. It already
+# defaults to a bounded pool (10), but pin it explicitly so an upstream
+# default change can't silently let broker connections grow unbounded on
+# the autoscaled `default` worker or the 20-thread `dvr` worker.
+CELERY_BROKER_POOL_LIMIT = int(os.environ.get("CELERY_BROKER_POOL_LIMIT", "10"))
 
 CELERY_ACCEPT_CONTENT = ["json"]
 CELERY_TASK_SERIALIZER = "json"
@@ -512,16 +541,25 @@ LOG_LEVEL_MAP = {
 # Get log level from environment variable, default to INFO if not set
 # Add debugging output to see exactly what's being detected
 env_log_level = os.environ.get("DISPATCHARR_LOG_LEVEL", "")
-print(f"Environment DISPATCHARR_LOG_LEVEL detected as: '{env_log_level}'")
+startup_log(f"Environment DISPATCHARR_LOG_LEVEL detected as: '{env_log_level}'")
 
 if not env_log_level:
-    print("No DISPATCHARR_LOG_LEVEL found in environment, using default INFO")
+    startup_log("No DISPATCHARR_LOG_LEVEL found in environment, using default INFO")
     LOG_LEVEL_NAME = "INFO"
 else:
     LOG_LEVEL_NAME = env_log_level.upper()
-    print(f"Setting log level to: {LOG_LEVEL_NAME}")
+    startup_log(f"Setting log level to: {LOG_LEVEL_NAME}")
 
 LOG_LEVEL = LOG_LEVEL_MAP.get(LOG_LEVEL_NAME, 20)  # Default to INFO (20) if invalid
+
+# Read before Django re-stamps os.environ["TZ"] to TIME_ZONE. Migration 0020
+# seeds the display time zone from this on a fresh install.
+DISPATCHARR_DISPLAY_TZ = (
+    os.environ.get("DISPATCHARR_TIME_ZONE") or os.environ.get("TZ") or "UTC"
+)
+
+# Loggers can fire during app loading, before dictConfig runs.
+configure_early_logging(LOG_LEVEL)
 
 # Add this to your existing LOGGING configuration or create one if it doesn't exist
 LOGGING = {
@@ -529,6 +567,7 @@ LOGGING = {
     "disable_existing_loggers": False,
     "formatters": {
         "verbose": {
+            "()": "dispatcharr.startup_log.DisplayTimezoneFormatter",
             "format": "{asctime} {levelname} {name} {message}",
             "style": "{",
         },
@@ -596,6 +635,15 @@ LOGGING = {
         "level": LOG_LEVEL,  # Use user-configured level instead of hardcoded 'INFO'
     },
 }
+
+# The log collector process files the container's merged stdout; Python
+# logging stays console-only. LOG_FILE_DIR is where the log browser reads.
+LOG_FILE_DIR = os.environ.get("DISPATCHARR_LOG_DIR", "/data/logs")
+try:
+    os.makedirs(LOG_FILE_DIR, exist_ok=True)
+except OSError:
+    # No writable /data (e.g. some test environments): console-only.
+    LOG_FILE_DIR = None
 
 # Connect script execution safety settings
 # Allowed base directories for custom scripts; real paths must be inside

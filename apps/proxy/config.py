@@ -12,6 +12,7 @@ class BaseConfig:
     RETRY_WAIT_INTERVAL = 0.5  # seconds to wait between retries
     CONNECTION_TIMEOUT = 10  # seconds to wait for initial connection
     MAX_STREAM_SWITCHES = 10  # Maximum number of stream switch attempts before giving up
+    FAILOVER_ROTATION_COOLDOWN = 60 # Wait this long after exhausting all streams before wrapping back to the top.
     BUFFER_CHUNK_SIZE = 188 * 1361  # ~256KB
     BUFFERING_TIMEOUT = 15  # Seconds to wait for buffering before switching streams
     BUFFER_SPEED = 1 # What speed to condsider the stream buffering, 1x is normal speed, 2x is double speed, etc.
@@ -55,6 +56,7 @@ class BaseConfig:
                 "channel_init_grace_period": 60,
                 "channel_client_wait_period": 5,
                 "new_client_behind_seconds": 5,
+                "validate_redirect_urls": True,
             }
 
         finally:
@@ -154,6 +156,12 @@ class TSConfig(BaseConfig):
         settings = cls.get_proxy_settings()
         return settings.get("channel_client_wait_period", 5)
 
+    @classmethod
+    def get_validate_redirect_urls(cls):
+        """Whether Redirect mode probes the provider URL (HEAD/GET) before handing off."""
+        settings = cls.get_proxy_settings()
+        return bool(settings.get("validate_redirect_urls", True))
+
     # Dynamic property access for these settings
     @property
     def CHANNEL_SHUTDOWN_DELAY(self):
@@ -174,3 +182,7 @@ class TSConfig(BaseConfig):
     @property
     def CHANNEL_CLIENT_WAIT_PERIOD(self):
         return self.get_channel_client_wait_period()
+
+    @property
+    def VALIDATE_REDIRECT_URLS(self):
+        return self.get_validate_redirect_urls()

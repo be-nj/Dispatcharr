@@ -32,6 +32,8 @@ import './sidebar.css';
 import useSettingsStore from '../store/settings';
 import useAuthStore from '../store/auth';
 import { USER_LEVELS } from '../constants';
+import { canViewDvr } from '../utils/dvrAccess';
+import { canViewVod } from '../utils/vodAccess';
 import UserForm from './forms/User';
 import NotificationCenter from './NotificationCenter';
 
@@ -202,13 +204,28 @@ const Sidebar = ({ collapsed, toggleDrawer, drawerWidth, miniDrawerWidth }) => {
   const [ipRevealed, setIpRevealed] = useState(false);
 
   const isAdmin = authUser && authUser.user_level >= USER_LEVELS.ADMIN;
+  const userCanViewDvr = canViewDvr(authUser);
+  const userCanViewVod = canViewVod(authUser);
 
   const navOrder = getNavOrder();
   const hiddenNav = getHiddenNav();
+  const logCollectorRunning = environment.log_collector_running;
   const navItems = useMemo(() => {
-    const ordered = getOrderedNavItems(navOrder, isAdmin, channelIds);
+    const ordered = getOrderedNavItems(navOrder, isAdmin, channelIds, {
+      canViewDvr: userCanViewDvr,
+      canViewVod: userCanViewVod,
+      logCollectorRunning,
+    });
     return ordered.filter((item) => !hiddenNav.includes(item.id));
-  }, [navOrder, hiddenNav, isAdmin, channelIds]);
+  }, [
+    navOrder,
+    hiddenNav,
+    isAdmin,
+    userCanViewDvr,
+    userCanViewVod,
+    channelIds,
+    logCollectorRunning,
+  ]);
 
   const isSettingsPage = location.pathname.startsWith('/settings');
   const activeSettingsId = location.hash.replace('#', '');

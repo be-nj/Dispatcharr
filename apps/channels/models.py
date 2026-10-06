@@ -17,7 +17,11 @@ logger = logging.getLogger(__name__)
 
 # If you have an M3UAccount model in apps.m3u, you can still import it:
 from apps.m3u.models import M3UAccount
-from apps.m3u.connection_pool import reserve_profile_slot, release_profile_slot
+from apps.m3u.connection_pool import (
+    pool_has_capacity_for_profile,
+    release_profile_slot,
+    reserve_profile_slot,
+)
 
 
 # Add fallback functions if Redis isn't available
@@ -495,9 +499,6 @@ class Channel(models.Model):
         except Exception:
             ch_ids = set()
 
-        logger.debug("Candidate channels for preemption:")
-        logger.debug(ch_ids)
-
         # 2) Fallback: scan metadata keys and filter by m3u_profile == profile_id
         if not ch_ids:
             cursor = 0
@@ -526,13 +527,14 @@ class Channel(models.Model):
                 if cursor == 0:
                     break
 
-        logger.debug("Candidate channels for preemption:")
-        logger.debug(ch_ids)
-
         if not ch_ids:
             return None
 
-        # 3) Score candidates
+        logger.debug(
+            "Preemption candidates for profile %s: %s",
+            profile_id,
+            sorted(ch_ids),
+        )
         for ch_id in ch_ids:
             if ch_id in exclude_channel_ids:
                 continue
@@ -689,7 +691,7 @@ class Channel(models.Model):
         redis_client.delete(f"channel_stream:{self.id}")
         redis_client.delete(f"stream_profile:{stream_id}")
 
-    def get_stream(self, requester=None):
+    def get_stream(self, requester=None, allowed_m3u_profiles=None):
         """
         Finds an available stream for the requested channel and returns the selected stream and profile.
 
@@ -704,6 +706,22 @@ class Channel(models.Model):
         if not self.streams.exists():
             error_reason = "No streams assigned to channel"
             return None, None, error_reason, False
+
+        if requester and self.get_stream_profile().is_redirect():
+            from apps.m3u.utils import get_allowed_m3u_profiles
+
+            if allowed_m3u_profiles is None:
+                allowed_m3u_profiles = get_allowed_m3u_profiles(requester)
+
+            if allowed_m3u_profiles is not None:
+                # Redirect URLs are issued to individual users, so do not create a
+                # channel-wide assignment that another viewer could reuse.
+                streams = list(self.streams.all().order_by("channelstream__order"))
+                for stream in streams:
+                    for profile in allowed_m3u_profiles.get(stream.m3u_account_id, []):
+                        if pool_has_capacity_for_profile(profile, redis_client):
+                            return stream.id, profile.id, None, False
+                return None, None, "No compatible active profile found for any assigned stream", False
 
         # Reuse assignment only when this channel is still active in the proxy.
         # Stale channel_stream keys after stop/disconnect skip INCR and break pool
@@ -1149,9 +1167,35 @@ class ChannelGroupM3UAccount(models.Model):
         super().save(*args, **kwargs)
 
 
+class LogoQuerySet(models.QuerySet):
+    def bulk_create(self, objs, *args, **kwargs):
+        # bulk_create bypasses Model.save(); clamp names here so provider
+        # titles longer than varchar(255) cannot abort channel / EPG ingest.
+        from core.utils import truncate_with_warning
+
+        max_length = self.model._meta.get_field("name").max_length
+        for obj in objs:
+            obj.name = truncate_with_warning(
+                obj.name, max_length=max_length, label="Logo name"
+            )
+        return super().bulk_create(objs, *args, **kwargs)
+
+
 class Logo(models.Model):
     name = models.CharField(max_length=255)
     url = models.TextField(unique=True)
+
+    objects = LogoQuerySet.as_manager()
+
+    def save(self, *args, **kwargs):
+        from core.utils import truncate_with_warning
+
+        self.name = truncate_with_warning(
+            self.name,
+            max_length=self._meta.get_field("name").max_length,
+            label="Logo name",
+        )
+        super().save(*args, **kwargs)
 
     def __str__(self):
         return self.name
