@@ -5,6 +5,7 @@ This separates business logic from HTTP handling in views.
 
 import logging
 import time
+import uuid
 import json
 import gevent
 from django.db import close_old_connections
@@ -150,13 +151,9 @@ class ChannelService:
             if ChannelService._channel_proxy_is_active(
                 proxy_server.redis_client, channel_id
             ):
-                from apps.channels.models import Channel
-
-                channel = Channel.objects.filter(uuid=channel_id).first()
-                if channel and not proxy_server.redis_client.get(
-                    f"channel_stream:{channel.id}"
-                ):
-                    sid, pid, error, slot_reserved = channel.get_stream()
+                owner, held_key = ChannelService._slot_owner(channel_id)
+                if owner and not proxy_server.redis_client.get(held_key):
+                    sid, pid, error, slot_reserved = owner.get_stream()
                     if error:
                         logger.warning(
                             f"Could not re-reserve stream for {channel_id} "
@@ -175,6 +172,25 @@ class ChannelService:
             close_old_connections()
 
         return True
+
+    @staticmethod
+    def _slot_owner(channel_id):
+        """
+        The Channel or Stream holding the profile slot for a live proxy id,
+        and the Redis key that marks the slot as held.
+
+        The live proxy runs channels by UUID and single streams by their
+        64-character stream hash. Filtering Channel.uuid by a hash raises a
+        ValidationError, which made a second client joining a stream played
+        by hash fail with 503.
+        """
+        try:
+            uuid.UUID(str(channel_id))
+        except ValueError:
+            stream = Stream.objects.filter(stream_hash=channel_id).first()
+            return (stream, f"stream_profile:{stream.id}") if stream else (None, None)
+        channel = Channel.objects.filter(uuid=channel_id).first()
+        return (channel, f"channel_stream:{channel.id}") if channel else (None, None)
 
     @staticmethod
     def _channel_proxy_is_active(redis_client, channel_id):

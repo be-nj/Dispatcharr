@@ -13,6 +13,7 @@ from apps.proxy.live_proxy.services.channel_service import ChannelService
 
 
 CHANNEL_ID = "00000000-0000-0000-0000-000000000099"
+STREAM_HASH = "c591772778d479f76c131d8d75e68637d24c0724258ecf7a946944406fc18983"
 
 
 def _configure_ownership_pipeline(
@@ -114,6 +115,31 @@ class ChannelTeardownAvailabilityTests(TestCase):
         self.assertFalse(ChannelService.cancel_pending_shutdown(CHANNEL_ID))
         redis.hset.assert_not_called()
         redis.delete.assert_not_called()
+
+    @patch("apps.proxy.live_proxy.services.channel_service.Stream")
+    @patch("apps.proxy.live_proxy.services.channel_service.Channel")
+    @patch("apps.proxy.live_proxy.services.channel_service.ConfigHelper.channel_shutdown_delay")
+    @patch("apps.proxy.live_proxy.services.channel_service.ProxyServer.get_instance")
+    def test_cancel_pending_shutdown_accepts_stream_hash(
+        self, mock_get_instance, mock_delay, mock_channel, mock_stream
+    ):
+        # A second client joining a stream played by its hash (not a channel
+        # UUID) used to hit Channel.objects.filter(uuid=<hash>), which raises,
+        # and the client got a 503.
+        mock_delay.return_value = 30
+        redis = MagicMock()
+        redis.exists.side_effect = lambda key: "last_client_disconnect" in key or "metadata" in key
+        redis.get.return_value = None
+        redis.hget.return_value = ChannelState.ACTIVE.encode()
+        mock_get_instance.return_value = _mock_proxy_server(redis)
+        stream = MagicMock(id=10901)
+        stream.get_stream.return_value = (10901, 4, None, True)
+        mock_stream.objects.filter.return_value.first.return_value = stream
+
+        self.assertTrue(ChannelService.cancel_pending_shutdown(STREAM_HASH))
+        mock_channel.objects.filter.assert_not_called()
+        mock_stream.objects.filter.assert_called_once_with(stream_hash=STREAM_HASH)
+        redis.get.assert_any_call("stream_profile:10901")
 
     @patch("apps.proxy.live_proxy.services.channel_service.ConfigHelper.channel_shutdown_delay")
     @patch("apps.proxy.live_proxy.services.channel_service.ProxyServer.get_instance")
