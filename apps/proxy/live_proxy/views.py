@@ -55,6 +55,72 @@ def _channel_stopping_response():
     return response
 
 
+_JOINABLE_STATES = (
+    ChannelState.ACTIVE,
+    ChannelState.WAITING_FOR_CLIENTS,
+    ChannelState.BUFFERING,
+    ChannelState.INITIALIZING,
+    ChannelState.CONNECTING,
+)
+
+
+def _text(value):
+    return value.decode() if isinstance(value, bytes) else value
+
+
+def _live_session_for_stream(redis_client, stream_id, exclude_id):
+    """
+    Return the id of another live proxy session that already pulls stream_id.
+
+    A stream can be played as a channel (by uuid) and directly (by its hash).
+    Each id starts its own upstream connection, and the second one reuses the
+    first one's profile without reserving a slot, so both land on the same
+    provider line. Providers that allow one connection per line then drop the
+    two in turn, and the picture freezes on every reconnect.
+    """
+    if redis_client is None or stream_id is None:
+        return None
+    pattern = RedisKeys.channel_metadata("*")
+    prefix, suffix = pattern.split("*")
+    for key in redis_client.scan_iter(match=pattern, count=100):
+        session_id = _text(key)[len(prefix):-len(suffix)]
+        if session_id == str(exclude_id):
+            continue
+        metadata = {
+            _text(k): _text(v) for k, v in redis_client.hgetall(key).items()
+        }
+        if metadata.get(ChannelMetadataField.STATE) not in _JOINABLE_STATES:
+            continue
+        if metadata.get(ChannelMetadataField.STREAM_ID) == str(stream_id):
+            return session_id
+    return None
+
+
+def _shared_session_id(proxy_server, channel_id, channel):
+    """
+    Pick the live session this request should join instead of opening a second
+    upstream connection to the same stream; None to start or join its own.
+    """
+    redis_client = proxy_server.redis_client
+    if redis_client is None or channel.get_stream_profile().is_redirect():
+        return None
+    own = redis_client.hgetall(RedisKeys.channel_metadata(channel_id)) or {}
+    own_state = own.get(ChannelMetadataField.STATE) or own.get(
+        ChannelMetadataField.STATE.encode()
+    )
+    if _text(own_state) in _JOINABLE_STATES:
+        return None
+    if isinstance(channel, Channel):
+        stream_id = (
+            channel.streams.order_by("channelstream__order")
+            .values_list("id", flat=True)
+            .first()
+        )
+    else:
+        stream_id = channel.id
+    return _live_session_for_stream(redis_client, stream_id, channel_id)
+
+
 def _channel_setup_needed(proxy_server, channel_id):
     """
     Decide whether this worker still needs to run full channel setup.
@@ -182,6 +248,17 @@ def stream_ts(request, channel_id, user=None, force_output_format=None):
 
     try:
         channel = get_stream_object(channel_id)
+        try:
+            shared_id = _shared_session_id(proxy_server, channel_id, channel)
+        except Exception as e:
+            logger.warning(f"Could not check for a shared session of {channel_id}: {e}")
+            shared_id = None
+        if shared_id:
+            logger.info(
+                f"Stream of {channel_id} is already live as {shared_id}, joining that session"
+            )
+            channel_id = shared_id
+            channel = get_stream_object(channel_id)
         channel_display_name = getattr(channel, "name", None)
         allowed_m3u_profiles = None
         if user and channel.get_stream_profile().is_redirect():
