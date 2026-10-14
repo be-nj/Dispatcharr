@@ -38,6 +38,11 @@ const LoginForm = () => {
   const [forgotPasswordOpened, setForgotPasswordOpened] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [sso, setSso] = useState({ enabled: false, label: 'Sign in with SSO' });
+  // Read before the effect below clears the fragment: after a failed SSO
+  // round trip the form stays, or auto-login would bounce straight back.
+  const [ssoFailed] = useState(() =>
+    new URLSearchParams(window.location.hash.slice(1)).has('sso_error')
+  );
 
   // Simple base64 encoding/decoding for localStorage
   // Note: This is obfuscation, not encryption. Use browser's password manager for real security.
@@ -100,11 +105,16 @@ const LoginForm = () => {
   useEffect(() => {
     fetch('/api/accounts/oidc/status/')
       .then((r) => r.json())
-      .then((d) =>
-        setSso({ enabled: !!d.enabled, label: d.label || 'Sign in with SSO' })
-      )
+      .then((d) => {
+        setSso({ enabled: !!d.enabled, label: d.label || 'Sign in with SSO' });
+        // ?local keeps the password form, e.g. while the provider is down.
+        const local = new URLSearchParams(window.location.search).has('local');
+        if (d.enabled && d.auto_login && !ssoFailed && !local) {
+          window.location.href = '/api/accounts/oidc/login/';
+        }
+      })
       .catch(() => {});
-  }, []);
+  }, [ssoFailed]);
 
   useEffect(() => {
     // Tokens (or an error) handed over by the OIDC callback via URL fragment

@@ -1,5 +1,5 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import LoginForm from '../LoginForm';
 
 // ── Router mock ────────────────────────────────────────────────────────────────
@@ -507,6 +507,70 @@ describe('LoginForm', () => {
       fireEvent.click(screen.getByTestId('modal-close'));
 
       expect(screen.queryByTestId('modal')).not.toBeInTheDocument();
+    });
+  });
+
+  // ── SSO auto-login ─────────────────────────────────────────────────────────
+
+  describe('SSO auto-login', () => {
+    const realLocation = window.location;
+
+    const visit = (search = '', hash = '') => {
+      Object.defineProperty(window, 'location', {
+        configurable: true,
+        writable: true,
+        value: { href: '/login', pathname: '/login', search, hash },
+      });
+    };
+
+    const ssoStatus = (status) => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({ json: () => Promise.resolve(status) })
+      );
+    };
+
+    afterEach(() => {
+      Object.defineProperty(window, 'location', {
+        configurable: true,
+        writable: true,
+        value: realLocation,
+      });
+      vi.unstubAllGlobals();
+    });
+
+    it('goes straight to the identity provider when enabled', async () => {
+      setupMocks();
+      visit();
+      ssoStatus({ enabled: true, auto_login: true, label: 'SSO' });
+      renderLoginForm();
+      await waitFor(() =>
+        expect(window.location.href).toBe('/api/accounts/oidc/login/')
+      );
+    });
+
+    it('stays on the form without auto-login', async () => {
+      setupMocks();
+      visit();
+      ssoStatus({ enabled: true, auto_login: false, label: 'SSO' });
+      renderLoginForm();
+      await screen.findByText('SSO');
+      expect(window.location.href).toBe('/login');
+    });
+
+    it('stays on the form after a failed SSO round trip or with ?local', async () => {
+      for (const [search, hash] of [
+        ['', '#sso_error=not_authorized'],
+        ['?local', ''],
+      ]) {
+        setupMocks();
+        visit(search, hash);
+        ssoStatus({ enabled: true, auto_login: true, label: 'SSO' });
+        const { unmount } = renderLoginForm();
+        await screen.findByText('SSO');
+        expect(window.location.href).toBe('/login');
+        unmount();
+      }
     });
   });
 });

@@ -63,6 +63,9 @@ def get_config():
         "admin_group": os.environ.get("OIDC_ADMIN_GROUP", ""),
         "required_group": os.environ.get("OIDC_REQUIRED_GROUP", ""),
         "button_label": os.environ.get("OIDC_BUTTON_LABEL", "Sign in with SSO"),
+        # Send the login page straight on to the identity provider.
+        "auto_login": os.environ.get("OIDC_AUTO_LOGIN", "").lower()
+        in ("1", "true", "yes", "on"),
         "device_client_id": os.environ.get("OIDC_DEVICE_CLIENT_ID", ""),
         # authentik issues per-provider issuers; the device-flow client's
         # tokens carry its own iss (e.g. .../application/o/castarr/).
@@ -155,6 +158,7 @@ def oidc_status(request):
         {
             "enabled": cfg["enabled"],
             "label": cfg["button_label"],
+            "auto_login": cfg["enabled"] and cfg["auto_login"],
             # Public info for TV clients doing the OIDC device flow:
             "issuer": cfg["issuer"],
             "device_client_id": cfg["device_client_id"],
