@@ -134,6 +134,9 @@ class StreamSerializer(serializers.ModelSerializer):
         allow_null=True,
         required=False,
     )
+    # The account's name, so a client can tell viewers which provider a
+    # stream comes from without reading the account (and its credentials).
+    m3u_account_name = serializers.SerializerMethodField()
     read_only_fields = ["is_custom", "m3u_account", "stream_hash", "stream_id", "stream_chno"]
 
     class Meta:
@@ -143,6 +146,7 @@ class StreamSerializer(serializers.ModelSerializer):
             "name",
             "url",
             "m3u_account",  # Uncomment if using M3U fields
+            "m3u_account_name",
             "logo_url",
             "tvg_id",
             "local_file",
@@ -162,6 +166,9 @@ class StreamSerializer(serializers.ModelSerializer):
             "is_catchup",
             "catchup_days",
         ]
+
+    def get_m3u_account_name(self, obj):
+        return getattr(obj.m3u_account, "name", None)
 
     def get_fields(self):
         fields = super().get_fields()

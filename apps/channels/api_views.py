@@ -191,7 +191,8 @@ class StreamViewSet(viewsets.ModelViewSet):
             return [Authenticated()]
 
     def get_queryset(self):
-        qs = super().get_queryset()
+        # The serializer reads the account's name for every row.
+        qs = super().get_queryset().select_related("m3u_account")
         # Exclude streams from inactive M3U accounts
         qs = qs.exclude(m3u_account__is_active=False)
 
@@ -3036,7 +3037,7 @@ class GetChannelStreamsAPIView(APIView):
     def get(self, request, channel_id):
         channel = get_object_or_404(Channel, id=channel_id)
         # Order the streams by channelstream__order to match the order in the channel view
-        streams = channel.streams.all().order_by("channelstream__order")
+        streams = channel.streams.select_related("m3u_account").order_by("channelstream__order")
         serializer = StreamSerializer(streams, many=True)
         return Response(serializer.data)
 

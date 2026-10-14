@@ -773,6 +773,18 @@ class ChannelListIncludeStreamsQueryTests(TestCase):
         )
 
 
+    def test_streams_carry_their_account_name(self):
+        self._add_channel_with_stream(1)
+
+        response = self.client.get(
+            "/api/channels/channels/", {"page": 1, "page_size": 50, "include_streams": "true"}
+        )
+
+        streams = response.data["results"][0]["streams"]
+        self.assertEqual(
+            [s["m3u_account_name"] for s in streams], ["list-test-account"]
+        )
+
 class ChannelAssignedProfileScopeTests(TestCase):
     """Non-admin with assigned profiles: list/summary/get_ids are limited to
     enabled memberships in those profiles; retrieve by id is not.
