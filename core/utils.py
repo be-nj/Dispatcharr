@@ -1,3 +1,4 @@
+import uuid
 import json
 import redis
 import logging
@@ -949,12 +950,22 @@ def log_system_event(event_type, channel_id=None, channel_name=None, **details):
     from django.db import close_old_connections
 
     try:
+        # A stream played by its hash passes that hash in place of a channel UUID,
+        # which the UUID column rejects.
+        event_channel_id, event_details = channel_id, details
+        try:
+            if channel_id:
+                uuid.UUID(str(channel_id))
+        except ValueError:
+            event_channel_id = None
+            event_details = {**details, "stream_hash": str(channel_id)}
+
         # Create the event
         SystemEvent.objects.create(
             event_type=event_type,
-            channel_id=channel_id,
+            channel_id=event_channel_id,
             channel_name=channel_name,
-            details=details
+            details=event_details
         )
 
         # Connect integrations and plugin event hooks (non-blocking on gevent uWSGI)
