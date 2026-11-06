@@ -252,7 +252,8 @@ UPGEOF
         # Initialize new data directory with the same install user as the old
         # cluster. pg_upgrade requires the -U user to match both clusters.
         echo "Initializing new PostgreSQL data directory at $NEW_POSTGRES_DIR..."
-        su - "$POSTGRES_USER" -c "$NEW_BINDIR/initdb -U $_install_user -D $NEW_POSTGRES_DIR"
+        # su - drops LANG, and without it initdb falls back to SQL_ASCII.
+        su - "$POSTGRES_USER" -c "$NEW_BINDIR/initdb -E UTF8 --locale=C.UTF-8 -U $_install_user -D $NEW_POSTGRES_DIR"
         echo "Running pg_upgrade from $OLD_BINDIR to $NEW_BINDIR..."
         su - "$POSTGRES_USER" -c "$NEW_BINDIR/pg_upgrade -U $_install_user -b $OLD_BINDIR -B $NEW_BINDIR -d $POSTGRES_DIR -D $NEW_POSTGRES_DIR"
 
@@ -289,7 +290,8 @@ UPGEOF
 
         # Initialize PostgreSQL as the application user.
         # The superuser role is automatically named $POSTGRES_USER.
-        su - "$POSTGRES_USER" -c "$PG_BINDIR/initdb -D ${POSTGRES_DIR}"
+        # su - drops LANG, and without it initdb falls back to SQL_ASCII.
+        su - "$POSTGRES_USER" -c "$PG_BINDIR/initdb -E UTF8 --locale=C.UTF-8 -D ${POSTGRES_DIR}"
 
         # Configure authentication and network access.
         configure_pg_network "${POSTGRES_DIR}"
