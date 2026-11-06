@@ -66,7 +66,7 @@ sed -i "s/NGINX_PORT/${DISPATCHARR_PORT}/g" /etc/nginx/sites-enabled/default
 
 # Configure nginx based on IPv6 availability
 # Read from /proc: the base image no longer ships iproute2.
-if [ -s /proc/net/if_inet6 ]; then
+if grep -q . /proc/net/if_inet6 2>/dev/null; then
     echo "✅ IPv6 is available, enabling IPv6 in nginx"
 else
     echo "⚠️  IPv6 not available, disabling IPv6 in nginx"
